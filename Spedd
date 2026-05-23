@@ -1,0 +1,1046 @@
+-- PlayerHub LocalScript (Rayfield Theme)
+-- Place in: StarterPlayer > StarterPlayerScripts
+
+local Players          = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService       = game:GetService("RunService")
+local camera           = workspace.CurrentCamera
+
+local player    = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid  = character:WaitForChild("Humanoid")
+
+-- ================================
+-- SETTINGS
+-- ================================
+local WALK_DEFAULT = 16
+local WALK_MIN     = 2
+local WALK_MAX     = 300
+local WALK_STEP    = 5
+
+local JUMP_DEFAULT = 50
+local JUMP_MIN     = 10
+local JUMP_MAX     = 500
+local JUMP_STEP    = 10
+
+local FLY_SPEED_DEFAULT = 50
+local FLY_SPEED_MIN     = 10
+local FLY_SPEED_MAX     = 200
+
+-- ================================
+-- STATE
+-- ================================
+local walkValue         = WALK_DEFAULT
+local jumpValue         = JUMP_DEFAULT
+local hubVisible        = true
+local aimbotEnabled     = false
+local noclipEnabled     = false
+local flyEnabled        = false
+local flySpeed          = FLY_SPEED_DEFAULT
+
+local dragWhat          = nil
+local dragStartMouse    = nil
+local dragStartPos      = nil
+local movedWhileDragging = false
+
+-- noclip / fly storage
+local flyBodyVelocity = nil
+local flyBodyGyro     = nil
+
+-- ================================
+-- RAYFIELD THEME COLORS
+-- ================================
+local RAYFIELD = {
+	background    = Color3.fromRGB(25, 25, 35),
+	panel         = Color3.fromRGB(30, 30, 40),
+	header        = Color3.fromRGB(40, 30, 50),
+	accent        = Color3.fromRGB(160, 80, 240),  -- purple
+	accentBright  = Color3.fromRGB(200, 120, 255),
+	textPrimary   = Color3.fromRGB(240, 240, 250),
+	textSecondary = Color3.fromRGB(150, 150, 160),
+	buttonOff     = Color3.fromRGB(45, 45, 60),
+	buttonOn      = Color3.fromRGB(120, 60, 180),
+	red           = Color3.fromRGB(220, 60, 80),
+	green         = Color3.fromRGB(80, 200, 120),
+	orange        = Color3.fromRGB(255, 150, 60),
+}
+
+-- ================================
+-- GUI
+-- ================================
+local gui = Instance.new("ScreenGui")
+gui.Name           = "PlayerHub"
+gui.ResetOnSpawn   = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder   = 100
+gui.Parent         = player.PlayerGui
+
+-- ================================
+-- HELPERS
+-- ================================
+local function clamp(v, lo, hi)
+	return math.max(lo, math.min(hi, v))
+end
+
+-- Frame-based button = ZERO touch delay on mobile
+local function makeBtn(parent, txt, x, y, w, h, color, callback)
+	local f = Instance.new("Frame")
+	f.Size             = UDim2.new(0, w, 0, h)
+	f.Position         = UDim2.new(0, x, 0, y)
+	f.BackgroundColor3 = color
+	f.BorderSizePixel  = 0
+	f.ZIndex           = 12
+	f.Active           = true
+	f.Parent           = parent
+	Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size                = UDim2.new(1, 0, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text                = txt
+	lbl.TextColor3          = RAYFIELD.textPrimary
+	lbl.TextSize            = 15
+	lbl.Font                = Enum.Font.GothamBold
+	lbl.ZIndex              = 13
+	lbl.Parent              = f
+
+	f.InputBegan:Connect(function(inp)
+		if inp.UserInputType == Enum.UserInputType.MouseButton1
+		or inp.UserInputType == Enum.UserInputType.Touch then
+			f.BackgroundTransparency = 0.35
+			callback()
+		end
+	end)
+	f.InputEnded:Connect(function(inp)
+		if inp.UserInputType == Enum.UserInputType.MouseButton1
+		or inp.UserInputType == Enum.UserInputType.Touch then
+			f.BackgroundTransparency = 0
+		end
+	end)
+	return f, lbl
+end
+
+local function makeLabel(parent, txt, x, y, w, h, size, color)
+	local l = Instance.new("TextLabel")
+	l.Size                = UDim2.new(0, w, 0, h)
+	l.Position            = UDim2.new(0, x, 0, y)
+	l.BackgroundTransparency = 1
+	l.Text                = txt
+	l.TextColor3          = color or RAYFIELD.textPrimary
+	l.TextSize            = size or 14
+	l.Font                = Enum.Font.GothamBold
+	l.ZIndex              = 12
+	l.Parent              = parent
+	return l
+end
+
+local function makeSlider(parent, x, y, w, color)
+	local track = Instance.new("Frame")
+	track.Size             = UDim2.new(0, w, 0, 10)
+	track.Position         = UDim2.new(0, x, 0, y)
+	track.BackgroundColor3 = RAYFIELD.buttonOff
+	track.BorderSizePixel  = 0
+	track.ZIndex           = 12
+	track.Active           = true
+	track.Parent           = parent
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+	local fill = Instance.new("Frame")
+	fill.Size             = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = color
+	fill.BorderSizePixel  = 0
+	fill.ZIndex           = 13
+	fill.Parent           = track
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+	local thumb = Instance.new("Frame")
+	thumb.Size             = UDim2.new(0, 24, 0, 24)
+	thumb.AnchorPoint      = Vector2.new(0.5, 0.5)
+	thumb.Position         = UDim2.new(0, 0, 0.5, 0)
+	thumb.BackgroundColor3 = RAYFIELD.textPrimary
+	thumb.BorderSizePixel  = 0
+	thumb.ZIndex           = 14
+	thumb.Active           = true
+	thumb.Parent           = track
+	Instance.new("UICorner", thumb).CornerRadius = UDim.new(1, 0)
+
+	local ths = Instance.new("UIStroke")
+	ths.Color     = color
+	ths.Thickness = 2.5
+	ths.Parent    = thumb
+
+	return track, fill, thumb
+end
+
+local function getSliderValue(pos, track, minV, maxV)
+	local ap  = track.AbsolutePosition
+	local as  = track.AbsoluteSize
+	local rel = clamp((pos.X - ap.X) / as.X, 0, 1)
+	return math.floor(minV + rel * (maxV - minV))
+end
+
+-- ================================
+-- TOGGLE BUTTON (draggable Frame)
+-- ================================
+local toggleBtn = Instance.new("Frame")
+toggleBtn.Size             = UDim2.new(0, 100, 0, 100)
+toggleBtn.Position         = UDim2.new(0, 20, 0.5, -50)
+toggleBtn.BackgroundColor3 = RAYFIELD.red
+toggleBtn.BorderSizePixel  = 0
+toggleBtn.ZIndex           = 50
+toggleBtn.Active           = true
+toggleBtn.Parent           = gui
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 18)
+
+local toggleLabel = Instance.new("TextLabel")
+toggleLabel.Size                = UDim2.new(1, 0, 1, 0)
+toggleLabel.BackgroundTransparency = 1
+toggleLabel.Text                = "CLOSE\nHUB"
+toggleLabel.TextColor3          = RAYFIELD.textPrimary
+toggleLabel.TextSize            = 16
+toggleLabel.Font                = Enum.Font.GothamBold
+toggleLabel.ZIndex              = 51
+toggleLabel.Parent              = toggleBtn
+
+-- ================================
+-- HUB PANEL (Rayfield theme + taller)
+-- ================================
+local panel = Instance.new("Frame")
+panel.Size             = UDim2.new(0, 340, 0, 860)
+panel.Position         = UDim2.new(0, 140, 0.5, -430)
+panel.BackgroundColor3 = RAYFIELD.panel
+panel.BorderSizePixel  = 0
+panel.ZIndex           = 10
+panel.Visible          = true
+panel.Parent           = gui
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 14)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color      = RAYFIELD.accent
+stroke.Thickness  = 2
+stroke.Parent     = panel
+
+-- Header
+local header = Instance.new("Frame")
+header.Size             = UDim2.new(1, 0, 0, 52)
+header.BackgroundColor3 = RAYFIELD.header
+header.BorderSizePixel  = 0
+header.ZIndex           = 11
+header.Active           = true
+header.Parent           = panel
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 14)
+
+local headerFix = Instance.new("Frame")
+headerFix.Size             = UDim2.new(1, 0, 0, 14)
+headerFix.Position         = UDim2.new(0, 0, 1, -14)
+headerFix.BackgroundColor3 = RAYFIELD.header
+headerFix.BorderSizePixel  = 0
+headerFix.ZIndex           = 11
+headerFix.Parent           = header
+
+local headerLabel = Instance.new("TextLabel")
+headerLabel.Size                = UDim2.new(1, 0, 1, 0)
+headerLabel.BackgroundTransparency = 1
+headerLabel.Text                = "⚡ RAYFIELD"
+headerLabel.TextColor3          = RAYFIELD.accentBright
+headerLabel.TextSize            = 18
+headerLabel.Font                = Enum.Font.GothamBold
+headerLabel.ZIndex              = 12
+headerLabel.Parent              = header
+
+-- ================================
+-- WALK SPEED SECTION
+-- ================================
+makeLabel(panel, "WALK SPEED", 18, 62, 304, 18, 12, RAYFIELD.accent)
+
+local walkBox = Instance.new("Frame")
+walkBox.Size             = UDim2.new(0, 304, 0, 56)
+walkBox.Position         = UDim2.new(0, 18, 0, 82)
+walkBox.BackgroundColor3 = RAYFIELD.background
+walkBox.BorderSizePixel  = 0
+walkBox.ZIndex           = 12
+walkBox.Parent           = panel
+Instance.new("UICorner", walkBox).CornerRadius = UDim.new(0, 10)
+
+local walkNumLbl = makeLabel(walkBox, "16", 0, 4, 304, 30, 24, RAYFIELD.accentBright)
+walkNumLbl.TextXAlignment = Enum.TextXAlignment.Center
+local wUnit = makeLabel(walkBox, "studs / sec", 0, 36, 304, 16, 11, RAYFIELD.textSecondary)
+wUnit.TextXAlignment = Enum.TextXAlignment.Center
+
+makeBtn(panel, "−",     18,  148, 76,  40, RAYFIELD.red,
+	function() walkValue = clamp(walkValue - WALK_STEP, WALK_MIN, WALK_MAX) applyWalk() end)
+makeBtn(panel, "RESET", 104, 148, 104, 40, RAYFIELD.buttonOff,
+	function() walkValue = WALK_DEFAULT applyWalk() end)
+makeBtn(panel, "+",     218, 148, 104, 40, RAYFIELD.green,
+	function() walkValue = clamp(walkValue + WALK_STEP, WALK_MIN, WALK_MAX) applyWalk() end)
+
+local walkTrack, walkFill, walkThumb = makeSlider(panel, 18, 202, 304, RAYFIELD.accent)
+
+walkTrack.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat  = "walk"
+		walkValue = getSliderValue(inp.Position, walkTrack, WALK_MIN, WALK_MAX)
+		applyWalk()
+	end
+end)
+walkThumb.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat = "walk"
+	end
+end)
+
+-- ================================
+-- DIVIDER
+-- ================================
+local div1 = Instance.new("Frame")
+div1.Size             = UDim2.new(0, 304, 0, 1)
+div1.Position         = UDim2.new(0, 18, 0, 224)
+div1.BackgroundColor3 = RAYFIELD.buttonOff
+div1.BorderSizePixel  = 0
+div1.ZIndex           = 12
+div1.Parent           = panel
+
+-- ================================
+-- JUMP HEIGHT SECTION
+-- ================================
+makeLabel(panel, "JUMP HEIGHT", 18, 232, 304, 18, 12, RAYFIELD.accent)
+
+local jumpBox = Instance.new("Frame")
+jumpBox.Size             = UDim2.new(0, 304, 0, 56)
+jumpBox.Position         = UDim2.new(0, 18, 0, 252)
+jumpBox.BackgroundColor3 = RAYFIELD.background
+jumpBox.BorderSizePixel  = 0
+jumpBox.ZIndex           = 12
+jumpBox.Parent           = panel
+Instance.new("UICorner", jumpBox).CornerRadius = UDim.new(0, 10)
+
+local jumpNumLbl = makeLabel(jumpBox, "50", 0, 4, 304, 30, 24, RAYFIELD.accentBright)
+jumpNumLbl.TextXAlignment = Enum.TextXAlignment.Center
+local jUnit = makeLabel(jumpBox, "jump power", 0, 36, 304, 16, 11, RAYFIELD.textSecondary)
+jUnit.TextXAlignment = Enum.TextXAlignment.Center
+
+makeBtn(panel, "−",     18,  318, 76,  40, RAYFIELD.red,
+	function() jumpValue = clamp(jumpValue - JUMP_STEP, JUMP_MIN, JUMP_MAX) applyJump() end)
+makeBtn(panel, "RESET", 104, 318, 104, 40, RAYFIELD.buttonOff,
+	function() jumpValue = JUMP_DEFAULT applyJump() end)
+makeBtn(panel, "+",     218, 318, 104, 40, RAYFIELD.green,
+	function() jumpValue = clamp(jumpValue + JUMP_STEP, JUMP_MIN, JUMP_MAX) applyJump() end)
+
+local jumpTrack, jumpFill, jumpThumb = makeSlider(panel, 18, 372, 304, RAYFIELD.accent)
+
+jumpTrack.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat  = "jump"
+		jumpValue = getSliderValue(inp.Position, jumpTrack, JUMP_MIN, JUMP_MAX)
+		applyJump()
+	end
+end)
+jumpThumb.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat = "jump"
+	end
+end)
+
+-- ================================
+-- DIVIDER 2
+-- ================================
+local div2 = Instance.new("Frame")
+div2.Size             = UDim2.new(0, 304, 0, 1)
+div2.Position         = UDim2.new(0, 18, 0, 394)
+div2.BackgroundColor3 = RAYFIELD.buttonOff
+div2.BorderSizePixel  = 0
+div2.ZIndex           = 12
+div2.Parent           = panel
+
+-- ================================
+-- NOCLIP SECTION
+-- ================================
+makeLabel(panel, "NOCLIP", 18, 402, 304, 18, 12, RAYFIELD.accent)
+
+local noclipFrame = Instance.new("Frame")
+noclipFrame.Size             = UDim2.new(0, 304, 0, 46)
+noclipFrame.Position         = UDim2.new(0, 18, 0, 422)
+noclipFrame.BackgroundColor3 = RAYFIELD.red
+noclipFrame.BorderSizePixel  = 0
+noclipFrame.ZIndex           = 12
+noclipFrame.Active           = true
+noclipFrame.Parent           = panel
+Instance.new("UICorner", noclipFrame).CornerRadius = UDim.new(0, 10)
+
+local noclipLbl = Instance.new("TextLabel")
+noclipLbl.Size                = UDim2.new(1, 0, 1, 0)
+noclipLbl.BackgroundTransparency = 1
+noclipLbl.Text                = "NOCLIP: OFF"
+noclipLbl.TextColor3          = RAYFIELD.textPrimary
+noclipLbl.TextSize            = 16
+noclipLbl.Font                = Enum.Font.GothamBold
+noclipLbl.ZIndex              = 13
+noclipLbl.Parent              = noclipFrame
+
+noclipFrame.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		noclipFrame.BackgroundTransparency = 0.35
+		noclipEnabled = not noclipEnabled
+		if noclipEnabled then
+			noclipLbl.Text                = "NOCLIP: ON"
+			noclipFrame.BackgroundColor3  = RAYFIELD.green
+		else
+			noclipLbl.Text                = "NOCLIP: OFF"
+			noclipFrame.BackgroundColor3  = RAYFIELD.red
+		end
+	end
+end)
+noclipFrame.InputEnded:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		noclipFrame.BackgroundTransparency = 0
+	end
+end)
+
+-- ================================
+-- DIVIDER 3
+-- ================================
+local div3 = Instance.new("Frame")
+div3.Size             = UDim2.new(0, 304, 0, 1)
+div3.Position         = UDim2.new(0, 18, 0, 478)
+div3.BackgroundColor3 = RAYFIELD.buttonOff
+div3.BorderSizePixel  = 0
+div3.ZIndex           = 12
+div3.Parent           = panel
+
+-- ================================
+-- FLY SECTION
+-- ================================
+makeLabel(panel, "FLY", 18, 486, 304, 18, 12, RAYFIELD.accent)
+
+-- Fly speed slider
+local flySpeedBox = Instance.new("Frame")
+flySpeedBox.Size             = UDim2.new(0, 304, 0, 36)
+flySpeedBox.Position         = UDim2.new(0, 18, 0, 506)
+flySpeedBox.BackgroundColor3 = RAYFIELD.background
+flySpeedBox.BorderSizePixel  = 0
+flySpeedBox.ZIndex           = 12
+flySpeedBox.Parent           = panel
+Instance.new("UICorner", flySpeedBox).CornerRadius = UDim.new(0, 10)
+
+local flySpeedLbl = makeLabel(flySpeedBox, "50 speed", 0, 8, 304, 20, 14, RAYFIELD.accentBright)
+flySpeedLbl.TextXAlignment = Enum.TextXAlignment.Center
+
+local flySpeedTrack, flySpeedFill, flySpeedThumb = makeSlider(panel, 18, 550, 304, RAYFIELD.accent)
+
+local function updateFlySpeedUI()
+	local p = (flySpeed - FLY_SPEED_MIN) / (FLY_SPEED_MAX - FLY_SPEED_MIN)
+	flySpeedFill.Size      = UDim2.new(p, 0, 1, 0)
+	flySpeedThumb.Position = UDim2.new(p, 0, 0.5, 0)
+	flySpeedLbl.Text       = tostring(flySpeed) .. " speed"
+end
+
+flySpeedTrack.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat = "flyspeed"
+		flySpeed = getSliderValue(inp.Position, flySpeedTrack, FLY_SPEED_MIN, FLY_SPEED_MAX)
+		updateFlySpeedUI()
+	end
+end)
+flySpeedThumb.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat = "flyspeed"
+	end
+end)
+
+-- Fly toggle button
+local flyFrame = Instance.new("Frame")
+flyFrame.Size             = UDim2.new(0, 304, 0, 46)
+flyFrame.Position         = UDim2.new(0, 18, 0, 570)
+flyFrame.BackgroundColor3 = RAYFIELD.red
+flyFrame.BorderSizePixel  = 0
+flyFrame.ZIndex           = 12
+flyFrame.Active           = true
+flyFrame.Parent           = panel
+Instance.new("UICorner", flyFrame).CornerRadius = UDim.new(0, 10)
+
+local flyLbl = Instance.new("TextLabel")
+flyLbl.Size                = UDim2.new(1, 0, 1, 0)
+flyLbl.BackgroundTransparency = 1
+flyLbl.Text                = "FLY: OFF"
+flyLbl.TextColor3          = RAYFIELD.textPrimary
+flyLbl.TextSize            = 16
+flyLbl.Font                = Enum.Font.GothamBold
+flyLbl.ZIndex              = 13
+flyLbl.Parent              = flyFrame
+
+flyFrame.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		flyFrame.BackgroundTransparency = 0.35
+		flyEnabled = not flyEnabled
+		if flyEnabled then
+			flyLbl.Text                = "FLY: ON"
+			flyFrame.BackgroundColor3  = RAYFIELD.green
+			enableFly()
+		else
+			flyLbl.Text                = "FLY: OFF"
+			flyFrame.BackgroundColor3  = RAYFIELD.red
+			disableFly()
+		end
+	end
+end)
+flyFrame.InputEnded:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		flyFrame.BackgroundTransparency = 0
+	end
+end)
+
+-- ================================
+-- DIVIDER 4
+-- ================================
+local div4 = Instance.new("Frame")
+div4.Size             = UDim2.new(0, 304, 0, 1)
+div4.Position         = UDim2.new(0, 18, 0, 626)
+div4.BackgroundColor3 = RAYFIELD.buttonOff
+div4.BorderSizePixel  = 0
+div4.ZIndex           = 12
+div4.Parent           = panel
+
+-- ================================
+-- AIMBOT SECTION
+-- ================================
+local AIMBOT_RANGE     = 100
+local AIMBOT_RANGE_MIN = 20
+local AIMBOT_RANGE_MAX = 500
+
+makeLabel(panel, "AIMBOT", 18, 634, 304, 18, 12, RAYFIELD.accent)
+
+local aimbotBox = Instance.new("Frame")
+aimbotBox.Size             = UDim2.new(0, 304, 0, 46)
+aimbotBox.Position         = UDim2.new(0, 18, 0, 654)
+aimbotBox.BackgroundColor3 = RAYFIELD.background
+aimbotBox.BorderSizePixel  = 0
+aimbotBox.ZIndex           = 12
+aimbotBox.Parent           = panel
+Instance.new("UICorner", aimbotBox).CornerRadius = UDim.new(0, 10)
+
+local aimbotStatusLbl = makeLabel(aimbotBox, "OFF", 0, 4, 304, 20, 18, RAYFIELD.red)
+aimbotStatusLbl.TextXAlignment = Enum.TextXAlignment.Center
+
+local aimbotTargetLbl = makeLabel(aimbotBox, "No target", 0, 26, 304, 16, 10, RAYFIELD.textSecondary)
+aimbotTargetLbl.TextXAlignment = Enum.TextXAlignment.Center
+
+-- Range slider
+makeLabel(panel, "RANGE", 18, 708, 304, 18, 11, RAYFIELD.accentBright)
+
+local rangeBox = Instance.new("Frame")
+rangeBox.Size             = UDim2.new(0, 304, 0, 36)
+rangeBox.Position         = UDim2.new(0, 18, 0, 728)
+rangeBox.BackgroundColor3 = RAYFIELD.background
+rangeBox.BorderSizePixel  = 0
+rangeBox.ZIndex           = 12
+rangeBox.Parent           = panel
+Instance.new("UICorner", rangeBox).CornerRadius = UDim.new(0, 10)
+
+local rangeNumLbl = makeLabel(rangeBox, "100 studs", 0, 8, 304, 20, 14, RAYFIELD.accentBright)
+rangeNumLbl.TextXAlignment = Enum.TextXAlignment.Center
+
+local rangeTrack, rangeFill, rangeThumb = makeSlider(panel, 18, 772, 304, RAYFIELD.accent)
+
+local function updateRangeUI()
+	local p = (AIMBOT_RANGE - AIMBOT_RANGE_MIN) / (AIMBOT_RANGE_MAX - AIMBOT_RANGE_MIN)
+	rangeFill.Size      = UDim2.new(p, 0, 1, 0)
+	rangeThumb.Position = UDim2.new(p, 0, 0.5, 0)
+	rangeNumLbl.Text    = tostring(AIMBOT_RANGE) .. " studs"
+end
+
+rangeTrack.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat     = "range"
+		AIMBOT_RANGE = getSliderValue(inp.Position, rangeTrack, AIMBOT_RANGE_MIN, AIMBOT_RANGE_MAX)
+		updateRangeUI()
+	end
+end)
+rangeThumb.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat = "range"
+	end
+end)
+
+-- Target mode buttons
+local aimMode = "head"
+
+makeLabel(panel, "TARGET MODE", 18, 792, 304, 18, 11, RAYFIELD.accentBright)
+
+local modeButtons = {}
+local modeDefs = {
+	{ key = "head",   label = "HEAD",   x = 18  },
+	{ key = "random", label = "RANDOM", x = 120 },
+	{ key = "body",   label = "BODY",   x = 222 },
+}
+
+local function refreshModeButtons()
+	for _, def in ipairs(modeDefs) do
+		local btn = modeButtons[def.key]
+		if def.key == aimMode then
+			btn.BackgroundColor3 = RAYFIELD.buttonOn
+		else
+			btn.BackgroundColor3 = RAYFIELD.buttonOff
+		end
+	end
+end
+
+for _, def in ipairs(modeDefs) do
+	local f = Instance.new("Frame")
+	f.Size             = UDim2.new(0, 94, 0, 38)
+	f.Position         = UDim2.new(0, def.x, 0, 812)
+	f.BackgroundColor3 = RAYFIELD.buttonOff
+	f.BorderSizePixel  = 0
+	f.ZIndex           = 12
+	f.Active           = true
+	f.Parent           = panel
+	Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size                = UDim2.new(1, 0, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text                = def.label
+	lbl.TextColor3          = RAYFIELD.textPrimary
+	lbl.TextSize            = 13
+	lbl.Font                = Enum.Font.GothamBold
+	lbl.ZIndex              = 13
+	lbl.Parent              = f
+
+	local key = def.key
+	f.InputBegan:Connect(function(inp)
+		if inp.UserInputType == Enum.UserInputType.MouseButton1
+		or inp.UserInputType == Enum.UserInputType.Touch then
+			aimMode = key
+			refreshModeButtons()
+		end
+	end)
+
+	modeButtons[def.key] = f
+end
+
+refreshModeButtons()
+
+-- Aimbot toggle
+local aimbotToggleFrame = Instance.new("Frame")
+aimbotToggleFrame.Size             = UDim2.new(0, 304, 0, 46)
+aimbotToggleFrame.Position         = UDim2.new(0, 18, 0, 858)
+aimbotToggleFrame.BackgroundColor3 = RAYFIELD.red
+aimbotToggleFrame.BorderSizePixel  = 0
+aimbotToggleFrame.ZIndex           = 12
+aimbotToggleFrame.Active           = true
+aimbotToggleFrame.Parent           = panel
+Instance.new("UICorner", aimbotToggleFrame).CornerRadius = UDim.new(0, 10)
+
+local aimbotBtnLbl = Instance.new("TextLabel")
+aimbotBtnLbl.Size                = UDim2.new(1, 0, 1, 0)
+aimbotBtnLbl.BackgroundTransparency = 1
+aimbotBtnLbl.Text                = "AIMBOT: OFF"
+aimbotBtnLbl.TextColor3          = RAYFIELD.textPrimary
+aimbotBtnLbl.TextSize            = 16
+aimbotBtnLbl.Font                = Enum.Font.GothamBold
+aimbotBtnLbl.ZIndex              = 13
+aimbotBtnLbl.Parent              = aimbotToggleFrame
+
+aimbotToggleFrame.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		aimbotToggleFrame.BackgroundTransparency = 0.35
+		aimbotEnabled = not aimbotEnabled
+		if aimbotEnabled then
+			aimbotBtnLbl.Text                     = "AIMBOT: ON"
+			aimbotToggleFrame.BackgroundColor3    = RAYFIELD.green
+			aimbotStatusLbl.Text                  = "ON"
+			aimbotStatusLbl.TextColor3            = RAYFIELD.green
+		else
+			aimbotBtnLbl.Text                     = "AIMBOT: OFF"
+			aimbotToggleFrame.BackgroundColor3    = RAYFIELD.red
+			aimbotStatusLbl.Text                  = "OFF"
+			aimbotStatusLbl.TextColor3            = RAYFIELD.red
+			aimbotTargetLbl.Text                  = "No target"
+			aimbotTargetLbl.TextColor3            = RAYFIELD.textSecondary
+		end
+	end
+end)
+aimbotToggleFrame.InputEnded:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		aimbotToggleFrame.BackgroundTransparency = 0
+	end
+end)
+
+-- ================================
+-- AIMBOT LOGIC
+-- ================================
+local function canSeeTarget(myRoot, targetPart)
+	local origin    = myRoot.Position
+	local targetPos = targetPart.Position
+	local direction = (targetPos - origin)
+
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = {character, targetPart.Parent}
+
+	local result = workspace:Raycast(origin, direction, rayParams)
+	return result == nil
+end
+
+local function getNearestPlayer()
+	local myRoot = character and character:FindFirstChild("HumanoidRootPart")
+	if not myRoot then return nil end
+
+	local nearest     = nil
+	local nearestDist = math.huge
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p == player then continue end
+
+		local char = p.Character
+		if not char then continue end
+
+		local root = char:FindFirstChild("HumanoidRootPart")
+		local head = char:FindFirstChild("Head")
+		local hum  = char:FindFirstChildOfClass("Humanoid")
+		if not root or not hum then continue end
+		if hum.Health <= 0 then continue end
+
+		local dist = (myRoot.Position - root.Position).Magnitude
+		if dist > AIMBOT_RANGE then continue end
+
+		local checkPart = head or root
+		if not canSeeTarget(myRoot, checkPart) then continue end
+
+		if dist < nearestDist then
+			nearestDist = dist
+			nearest     = char
+		end
+	end
+
+	return nearest
+end
+
+RunService.RenderStepped:Connect(function()
+	if not aimbotEnabled then return end
+
+	local target = getNearestPlayer()
+	if not target then
+		local myRoot = character and character:FindFirstChild("HumanoidRootPart")
+		local anyNearby = false
+		if myRoot then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p == player then continue end
+				local char = p.Character
+				if not char then continue end
+				local root = char:FindFirstChild("HumanoidRootPart")
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if root and hum and hum.Health > 0 then
+					local dist = (myRoot.Position - root.Position).Magnitude
+					if dist <= AIMBOT_RANGE then
+						anyNearby = true
+						break
+					end
+				end
+			end
+		end
+		aimbotTargetLbl.Text = anyNearby and "Blocked by object" or "No target"
+		aimbotTargetLbl.TextColor3 = anyNearby
+			and RAYFIELD.orange
+			or  RAYFIELD.textSecondary
+		return
+	end
+
+	local aimPart
+
+	if aimMode == "head" then
+		aimPart = target:FindFirstChild("Head")
+			or target:FindFirstChild("HumanoidRootPart")
+
+	elseif aimMode == "random" then
+		local parts = {}
+		for _, v in ipairs(target:GetChildren()) do
+			if v:IsA("BasePart") then
+				table.insert(parts, v)
+			end
+		end
+		if #parts > 0 then
+			aimPart = parts[math.random(1, #parts)]
+		else
+			aimPart = target:FindFirstChild("HumanoidRootPart")
+		end
+
+	elseif aimMode == "body" then
+		local bodyParts = {"UpperTorso", "LowerTorso", "HumanoidRootPart",
+			"LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg",
+			"LeftLowerArm", "RightLowerArm", "LeftLowerLeg", "RightLowerLeg"}
+		local found = {}
+		for _, name in ipairs(bodyParts) do
+			local p = target:FindFirstChild(name)
+			if p then table.insert(found, p) end
+		end
+		if #found > 0 then
+			aimPart = found[math.random(1, #found)]
+		else
+			aimPart = target:FindFirstChild("HumanoidRootPart")
+		end
+	end
+
+	if not aimPart then return end
+
+	local targetPlayer = Players:GetPlayerFromCharacter(target)
+	local partName = aimPart.Name
+	aimbotTargetLbl.Text      = targetPlayer and ("-> " .. targetPlayer.Name .. " [" .. partName .. "]") or "-> Unknown"
+	aimbotTargetLbl.TextColor3 = RAYFIELD.green
+
+	local camPos    = camera.CFrame.Position
+	local targetPos = aimPart.Position
+	camera.CFrame   = CFrame.lookAt(camPos, targetPos)
+end)
+
+-- ================================
+-- NOCLIP LOGIC
+-- ================================
+RunService.Stepped:Connect(function()
+	if not noclipEnabled then return end
+	if not character then return end
+
+	for _, v in pairs(character:GetDescendants()) do
+		if v:IsA("BasePart") then
+			v.CanCollide = false
+		end
+	end
+end)
+
+-- ================================
+-- FLY LOGIC
+-- ================================
+function enableFly()
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	flyBodyVelocity = Instance.new("BodyVelocity")
+	flyBodyVelocity.MaxForce = Vector3.new(9e4, 9e4, 9e4)
+	flyBodyVelocity.Velocity = Vector3.new(0, 0, 0)
+	flyBodyVelocity.Parent   = root
+
+	flyBodyGyro = Instance.new("BodyGyro")
+	flyBodyGyro.MaxTorque = Vector3.new(9e4, 9e4, 9e4)
+	flyBodyGyro.CFrame    = root.CFrame
+	flyBodyGyro.Parent    = root
+end
+
+function disableFly()
+	if flyBodyVelocity then flyBodyVelocity:Destroy() flyBodyVelocity = nil end
+	if flyBodyGyro     then flyBodyGyro:Destroy()     flyBodyGyro = nil end
+end
+
+RunService.RenderStepped:Connect(function()
+	if not flyEnabled then return end
+	if not character then return end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root or not flyBodyVelocity or not flyBodyGyro then return end
+
+	local cam = camera
+	local moveDir = Vector3.new(0, 0, 0)
+
+	-- WASD movement
+	if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+		moveDir = moveDir + (cam.CFrame.LookVector * flySpeed)
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+		moveDir = moveDir - (cam.CFrame.LookVector * flySpeed)
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+		moveDir = moveDir - (cam.CFrame.RightVector * flySpeed)
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+		moveDir = moveDir + (cam.CFrame.RightVector * flySpeed)
+	end
+
+	-- Space = up, Shift = down
+	if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+		moveDir = moveDir + Vector3.new(0, flySpeed, 0)
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+		moveDir = moveDir - Vector3.new(0, flySpeed, 0)
+	end
+
+	flyBodyVelocity.Velocity = moveDir
+	flyBodyGyro.CFrame       = cam.CFrame
+end)
+
+-- ================================
+-- APPLY FUNCTIONS
+-- ================================
+function applyWalk()
+	if humanoid and humanoid.Parent then humanoid.WalkSpeed = walkValue end
+	walkNumLbl.Text = tostring(walkValue)
+	local p = (walkValue - WALK_MIN) / (WALK_MAX - WALK_MIN)
+	walkFill.Size      = UDim2.new(p, 0, 1, 0)
+	walkThumb.Position = UDim2.new(p, 0, 0.5, 0)
+end
+
+function applyJump()
+	if humanoid and humanoid.Parent then humanoid.JumpPower = jumpValue end
+	jumpNumLbl.Text = tostring(jumpValue)
+	local p = (jumpValue - JUMP_MIN) / (JUMP_MAX - JUMP_MIN)
+	jumpFill.Size      = UDim2.new(p, 0, 1, 0)
+	jumpThumb.Position = UDim2.new(p, 0, 0.5, 0)
+end
+
+-- ================================
+-- TOGGLE HUB
+-- ================================
+local function doToggle()
+	hubVisible = not hubVisible
+	panel.Visible = hubVisible
+	toggleLabel.Text = hubVisible and "CLOSE\nHUB" or "OPEN\nHUB"
+	toggleBtn.BackgroundColor3 = hubVisible
+		and RAYFIELD.red
+		or  RAYFIELD.accent
+end
+
+toggleBtn.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		dragWhat          = "button"
+		dragStartMouse    = inp.Position
+		dragStartPos      = toggleBtn.Position
+		movedWhileDragging = false
+		doToggle()
+		toggleBtn.BackgroundTransparency = 0.3
+	end
+end)
+
+-- ================================
+-- GLOBAL DRAG HANDLER
+-- ================================
+UserInputService.InputChanged:Connect(function(inp)
+	if inp.UserInputType ~= Enum.UserInputType.MouseMovement
+	and inp.UserInputType ~= Enum.UserInputType.Touch then return end
+
+	if dragWhat == "button" and dragStartMouse then
+		local delta = inp.Position - dragStartMouse
+		if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
+			if not movedWhileDragging then
+				doToggle()
+			end
+			movedWhileDragging = true
+			toggleBtn.Position = UDim2.new(
+				dragStartPos.X.Scale, dragStartPos.X.Offset + delta.X,
+				dragStartPos.Y.Scale, dragStartPos.Y.Offset + delta.Y
+			)
+		end
+	elseif dragWhat == "walk" then
+		walkValue = getSliderValue(inp.Position, walkTrack, WALK_MIN, WALK_MAX)
+		applyWalk()
+	elseif dragWhat == "jump" then
+		jumpValue = getSliderValue(inp.Position, jumpTrack, JUMP_MIN, JUMP_MAX)
+		applyJump()
+	elseif dragWhat == "range" then
+		AIMBOT_RANGE = getSliderValue(inp.Position, rangeTrack, AIMBOT_RANGE_MIN, AIMBOT_RANGE_MAX)
+		updateRangeUI()
+	elseif dragWhat == "flyspeed" then
+		flySpeed = getSliderValue(inp.Position, flySpeedTrack, FLY_SPEED_MIN, FLY_SPEED_MAX)
+		updateFlySpeedUI()
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1
+	or inp.UserInputType == Enum.UserInputType.Touch then
+		toggleBtn.BackgroundTransparency = 0
+		dragWhat          = nil
+		dragStartMouse    = nil
+		movedWhileDragging = false
+	end
+end)
+
+-- M key toggle on PC
+UserInputService.InputBegan:Connect(function(inp, gpe)
+	if gpe then return end
+	if inp.KeyCode == Enum.KeyCode.M then doToggle() end
+end)
+
+-- ================================
+-- INSTANT TOUCH FOR ROBLOX MOBILE
+-- ================================
+local function fixInstantTouch()
+	local touchGui = player.PlayerGui:WaitForChild("TouchGui", 10)
+	if not touchGui then return end
+	local touchFrame = touchGui:WaitForChild("TouchControlFrame", 10)
+	if not touchFrame then return end
+
+	local jumpButton = touchFrame:FindFirstChild("JumpButton")
+	if jumpButton then
+		jumpButton.InputBegan:Connect(function(inp)
+			if inp.UserInputType == Enum.UserInputType.Touch then
+				if humanoid and humanoid.Parent then
+					humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+				end
+			end
+		end)
+	end
+
+	local joystick = touchFrame:FindFirstChild("DynamicThumbstickFrame")
+		or touchFrame:FindFirstChild("ThumbstickFrame")
+	if joystick then
+		joystick.InputBegan:Connect(function(inp)
+			if inp.UserInputType == Enum.UserInputType.Touch then
+				if humanoid and humanoid.Parent then
+					humanoid:ChangeState(Enum.HumanoidStateType.Running)
+				end
+			end
+		end)
+	end
+end
+
+local function applyInstantSettings()
+	if humanoid and humanoid.Parent then
+		humanoid.AutoJumpEnabled = false
+		humanoid.JumpPower       = jumpValue
+		humanoid.WalkSpeed       = walkValue
+	end
+end
+
+task.defer(fixInstantTouch)
+applyInstantSettings()
+
+-- ================================
+-- RESPAWN
+-- ================================
+player.CharacterAdded:Connect(function(newChar)
+	character = newChar
+	humanoid  = newChar:WaitForChild("Humanoid")
+	humanoid.WalkSpeed = walkValue
+	humanoid.JumpPower = jumpValue
+	applyInstantSettings()
+
+	-- reset fly/noclip on respawn
+	if flyEnabled then
+		disableFly()
+		task.wait(0.5)
+		enableFly()
+	end
+
+	task.wait(0.5)
+	fixInstantTouch()
+end)
+
+-- ================================
+-- INIT
+-- ================================
+applyWalk()
+applyJump()
+updateRangeUI()
+updateFlySpeedUI()
